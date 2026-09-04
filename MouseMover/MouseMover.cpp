@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <strsafe.h>
+#include "Version.h"
 
 // Unique message and identifiers
 #define WM_TRAYICON            (WM_APP + 1)
@@ -19,6 +20,7 @@
 #define IDM_EXIT               1006
 
 // Application constants
+static const WCHAR APP_VERSION[]       = VERSION_STRING_W;
 static const WCHAR WINDOW_CLASS_NAME[] = L"dolphin.apps.win32.MouseMover.WndClass";
 static const WCHAR WINDOW_TITLE[]      = L"MouseMover";
 static const WCHAR MUTEX_NAME[]         = L"dolphin.apps.win32.MouseMover.Mutex";
@@ -201,6 +203,12 @@ static void ShowContextMenu(HWND hWnd)
     {
         return;
     }
+
+    // Version header
+    WCHAR szTitle[64];
+    StringCchPrintfW(szTitle, ARRAYSIZE(szTitle), L"MouseMover v%s", APP_VERSION);
+    AppendMenuW(hMenu, MF_STRING | MF_GRAYED | MF_DISABLED, 0, szTitle);
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
 
     // Toggle Active / Paused
     AppendMenuW(hMenu, MF_STRING | (g_bEnabled ? MF_CHECKED : MF_UNCHECKED),

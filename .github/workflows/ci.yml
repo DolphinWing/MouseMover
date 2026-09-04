@@ -1,0 +1,72 @@
+name: CI and Release
+
+on:
+  push:
+    branches: [ "master", "main" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "master", "main" ]
+
+jobs:
+  build:
+    name: Build (${{ matrix.configuration }} | ${{ matrix.platform }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
+        platform: [Win32]
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v2
+
+    - name: Build solution
+      run: |
+        msbuild MouseMover.sln /p:Configuration=${{ matrix.configuration }} /p:Platform=${{ matrix.platform }} /m
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v2
+
+    - name: Build Release binary
+      run: |
+        msbuild MouseMover.sln /p:Configuration=Release /p:Platform=Win32 /m
+
+    - name: Package Release Assets
+      shell: pwsh
+      run: |
+        $tag = "${{ github.ref_name }}"
+        $pkgDir = "MouseMover-$tag"
+        $zipName = "$pkgDir-win32.zip"
+
+        New-Item -ItemType Directory -Path $pkgDir
+        Copy-Item Release\MouseMover.exe $pkgDir\
+        Copy-Item install-startup-task.bat $pkgDir\
+        Copy-Item uninstall-startup-task.bat $pkgDir\
+        Copy-Item README.md $pkgDir\
+        Copy-Item LICENSE $pkgDir\
+
+        Compress-Archive -Path $pkgDir -DestinationPath $zipName
+        echo "RELEASE_ZIP=$zipName" >> $env:GITHUB_ENV
+
+    - name: Publish GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        name: MouseMover ${{ github.ref_name }}
+        files: ${{ env.RELEASE_ZIP }}
+        generate_release_notes: true
