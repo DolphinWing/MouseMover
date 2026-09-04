@@ -23,6 +23,15 @@ static const WCHAR WINDOW_CLASS_NAME[] = L"dolphin.apps.win32.MouseMover.WndClas
 static const WCHAR WINDOW_TITLE[]      = L"MouseMover";
 static const WCHAR MUTEX_NAME[]         = L"dolphin.apps.win32.MouseMover.Mutex";
 
+// Registry configuration paths and keys
+static const WCHAR REG_SUBKEY[]         = L"Software\\dolphin.apps.win32.MouseMover";
+static const WCHAR REG_VAL_ENABLED[]    = L"Enabled";
+static const WCHAR REG_VAL_INTERVAL[]   = L"IntervalMs";
+
+// Default configuration values
+static const DWORD DEFAULT_IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+static const bool  DEFAULT_ENABLED         = true;
+
 // Timer interval to check system idle status (every 10 seconds)
 static const UINT CHECK_INTERVAL_MS = 10 * 1000;
 
@@ -31,8 +40,59 @@ static HINSTANCE g_hInstance = NULL;
 static NOTIFYICONDATAW g_nid = {};
 static UINT g_uTaskbarRestartMsg = 0;
 
-static bool  g_bEnabled       = true;
-static DWORD g_idleTimeoutMs  = 5 * 60 * 1000; // Default: 5 minutes
+static bool  g_bEnabled       = DEFAULT_ENABLED;
+static DWORD g_idleTimeoutMs  = DEFAULT_IDLE_TIMEOUT_MS;
+
+/**
+ * Loads configuration from Windows Registry HKCU.
+ * Falls back to defaults if not found.
+ */
+static void LoadSettingsFromRegistry()
+{
+    HKEY hKey = NULL;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, REG_SUBKEY, 0, KEY_READ, &hKey) == ERROR_SUCCESS)
+    {
+        DWORD dwEnabled = 0;
+        DWORD cbData = sizeof(dwEnabled);
+        if (RegGetValueW(hKey, NULL, REG_VAL_ENABLED, RRF_RT_REG_DWORD, NULL, &dwEnabled, &cbData) == ERROR_SUCCESS)
+        {
+            g_bEnabled = (dwEnabled != 0);
+        }
+
+        DWORD dwInterval = 0;
+        cbData = sizeof(dwInterval);
+        if (RegGetValueW(hKey, NULL, REG_VAL_INTERVAL, RRF_RT_REG_DWORD, NULL, &dwInterval, &cbData) == ERROR_SUCCESS)
+        {
+            if (dwInterval >= 10 * 1000 && dwInterval <= 60 * 60 * 1000)
+            {
+                g_idleTimeoutMs = dwInterval;
+            }
+        }
+
+        RegCloseKey(hKey);
+    }
+}
+
+/**
+ * Saves current configuration to Windows Registry HKCU.
+ */
+static void SaveSettingsToRegistry()
+{
+    HKEY hKey = NULL;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, REG_SUBKEY, 0, NULL,
+                        REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS)
+    {
+        DWORD dwEnabled = g_bEnabled ? 1 : 0;
+        RegSetValueExW(hKey, REG_VAL_ENABLED, 0, REG_DWORD,
+                       (const BYTE*)&dwEnabled, sizeof(dwEnabled));
+
+        DWORD dwInterval = g_idleTimeoutMs;
+        RegSetValueExW(hKey, REG_VAL_INTERVAL, 0, REG_DWORD,
+                       (const BYTE*)&dwInterval, sizeof(dwInterval));
+
+        RegCloseKey(hKey);
+    }
+}
 
 /**
  * Loads a crisp built-in icon matching small tray icon metrics.
@@ -237,21 +297,25 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
         {
         case IDM_TOGGLE_ENABLE:
             g_bEnabled = !g_bEnabled;
+            SaveSettingsToRegistry();
             UpdateTrayTooltip(hWnd);
             break;
 
         case IDM_INTERVAL_1M:
             g_idleTimeoutMs = 1 * 60 * 1000;
+            SaveSettingsToRegistry();
             UpdateTrayTooltip(hWnd);
             break;
 
         case IDM_INTERVAL_3M:
             g_idleTimeoutMs = 3 * 60 * 1000;
+            SaveSettingsToRegistry();
             UpdateTrayTooltip(hWnd);
             break;
 
         case IDM_INTERVAL_5M:
             g_idleTimeoutMs = 5 * 60 * 1000;
+            SaveSettingsToRegistry();
             UpdateTrayTooltip(hWnd);
             break;
 
@@ -297,6 +361,9 @@ int APIENTRY wWinMain(_In_     HINSTANCE hInstance,
         }
         return 0;
     }
+
+    // Load persisted user preferences from Registry
+    LoadSettingsFromRegistry();
 
     g_hInstance = hInstance;
     g_uTaskbarRestartMsg = RegisterWindowMessageW(L"TaskbarCreated");
