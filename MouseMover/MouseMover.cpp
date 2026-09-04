@@ -2,149 +2,105 @@
 //
 
 #include "stdafx.h"
-
 #include <windows.h>
-#include <winioctl.h>
-//#include <winable.h>
+#include <stdio.h>
 
-#define TIMER_CHECK_TIMEOUT		(60*1000*5)
+// Default idle threshold before simulating movement (5 minutes)
+static const DWORD DEFAULT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
-HHOOK g_hMouse;
-HHOOK g_hKeyBoard;
+// Timer interval to check system idle status (10 seconds)
+static const UINT CHECK_INTERVAL_MS = 10 * 1000;
 
-LRESULT CALLBACK MouseHookProc(int nCode, WPARAM wParam, LPARAM lParam);
-LRESULT CALLBACK KeyboardProc(int code, WPARAM wParam, LPARAM lParam);
-VOID CALLBACK MyTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
+// Simulated movement relative offset in pixels
+static const LONG MOUSE_OFFSET_DELTA = 1;
+
+static DWORD g_idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
+
+/**
+ * Simulates micro mouse movements using SendInput.
+ * Moves (+1, 0) then immediately (-1, 0) to reset the system idle timer
+ * without altering the visible cursor position.
+ */
+void SimulateMouseMove()
+{
+    INPUT inputs[2] = {};
+
+    // Move right by 1 pixel
+    inputs[0].type = INPUT_MOUSE;
+    inputs[0].mi.dx = MOUSE_OFFSET_DELTA;
+    inputs[0].mi.dy = 0;
+    inputs[0].mi.dwFlags = MOUSEEVENTF_MOVE;
+
+    // Move back left by 1 pixel
+    inputs[1].type = INPUT_MOUSE;
+    inputs[1].mi.dx = -MOUSE_OFFSET_DELTA;
+    inputs[1].mi.dy = 0;
+    inputs[1].mi.dwFlags = MOUSEEVENTF_MOVE;
+
+    UINT sent = SendInput(ARRAYSIZE(inputs), inputs, sizeof(INPUT));
+    if (sent != ARRAYSIZE(inputs))
+    {
+        printf("SendInput failed with error: %lu\n", GetLastError());
+    }
+}
+
+/**
+ * Timer procedure called periodically to check system idle time via GetLastInputInfo.
+ */
+VOID CALLBACK CheckIdleTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
+{
+    LASTINPUTINFO lii = {};
+    lii.cbSize = sizeof(LASTINPUTINFO);
+
+    if (!GetLastInputInfo(&lii))
+    {
+        printf("GetLastInputInfo failed: %lu\n", GetLastError());
+        return;
+    }
+
+    DWORD currentTick = GetTickCount();
+    // Unsigned subtraction correctly handles 49.7 day tick rollover
+    DWORD idleMs = currentTick - lii.dwTime;
+
+    if (idleMs >= g_idleTimeoutMs)
+    {
+        SYSTEMTIME lt;
+        GetLocalTime(&lt);
+        printf("\n[%02d:%02d:%02d] Idle: %lu ms (>= %lu ms). Triggering synthetic mouse move.\n",
+               lt.wHour, lt.wMinute, lt.wSecond, idleMs, g_idleTimeoutMs);
+
+        SimulateMouseMove();
+    }
+    else
+    {
+        // Heartbeat dot indicating active monitoring
+        printf(".");
+    }
+}
 
 int _tmain(int argc, _TCHAR* argv[])
 {
-	MSG msg;
+    printf("====================================================\n");
+    printf(" MouseMover - Idle Prevention (Phase 1: Core Engine)\n");
+    printf("====================================================\n");
+    printf("Idle Timeout   : %lu seconds\n", g_idleTimeoutMs / 1000);
+    printf("Check Interval : %u seconds\n", CHECK_INTERVAL_MS / 1000);
+    printf("Monitoring system idle status via GetLastInputInfo...\n\n");
 
-	printf("SetWindowsHookEx to WH_MOUSE_LL/WH_KEYBOARD_LL\n");
-	g_hMouse = SetWindowsHookEx(WH_MOUSE_LL, MouseHookProc, GetModuleHandle(NULL), 0);
-	if (!g_hMouse) {
-		printf("Hook Mouse error: %d\n", GetLastError());
-		return -1;//end program
-	}
+    UINT_PTR timerId = SetTimer(NULL, 0, CHECK_INTERVAL_MS, (TIMERPROC)CheckIdleTimerProc);
+    if (!timerId)
+    {
+        printf("Failed to create timer: %lu\n", GetLastError());
+        return -1;
+    }
 
-	g_hKeyBoard = SetWindowsHookEx(WH_KEYBOARD_LL, KeyboardProc, GetModuleHandle(NULL), 0);
-	if (!g_hKeyBoard) {
-		printf("Hook Keyboard error: %d\n", GetLastError());
-		return -1;//end program
-	}
+    MSG msg;
+    while (GetMessage(&msg, NULL, 0, 0))
+    {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
 
-	//printf("SetTimer\n");
-	SetTimer(NULL, 1, TIMER_CHECK_TIMEOUT, (TIMERPROC) MyTimerProc);
-
-	printf("start hacking, you can put it to background\n");
-	while ( GetMessage(&msg, NULL, 0, 0) )
-	{
-		TranslateMessage(&msg);
-		DispatchMessage(&msg);
-	}
-
-	//printf("KillTimer\n");
-	KillTimer(NULL, 1);
-
-	printf("UnhookWindowsHookEx\n");
-	if(g_hKeyBoard) UnhookWindowsHookEx(g_hKeyBoard);
-	if(g_hMouse) UnhookWindowsHookEx(g_hMouse);
-
-	return 0;
-}
-
-static int mouseX = 0, lastMouseX = 0, lastPadX = 0;
-static int mouseY = 0, lastMouseY = 0, lastPadY = 0;
-static bool tflag =false;
-//bool toggle = false;
-
-//http://msdn.microsoft.com/en-us/library/windows/desktop/ms644986(v=vs.85).aspx
-//nCode [in]
-//	Type: int
-//		A code the hook procedure uses to determine how to process the message. 
-//wParam [in]
-//	Type: WPARAM
-//		The identifier of the mouse message. This parameter can be one of the 
-//		following messages: WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, 
-//		WM_MOUSEWHEEL, WM_MOUSEHWHEEL, WM_RBUTTONDOWN, or WM_RBUTTONUP.
-//lParam [in]
-//	Type: LPARAM
-//		A pointer to an MSLLHOOKSTRUCT structure.
-LRESULT CALLBACK MouseHookProc(int nCode, WPARAM wParam, LPARAM lParam) 
-{ 
-	tflag = true;
-
-	PMSLLHOOKSTRUCT pmll = (PMSLLHOOKSTRUCT) lParam;	  		
-	//MSLLHOOKSTRUCT *info=(MSLLHOOKSTRUCT*) lParam;
-	mouseX = pmll->pt.x;
-	mouseY = pmll->pt.y;
-
-	//printf("msg: %lu, x:%ld, y:%ld\n", wParam, pmll->pt.x, pmll->pt.y);
-
-	return CallNextHookEx(g_hMouse, nCode, wParam, lParam);
-} 
-
-//http://msdn.microsoft.com/en-us/library/windows/desktop/ms644985(v=vs.85).aspx
-//nCode [in]
-//	Type: int
-//		A code the hook procedure uses to determine how to process the message. 
-//wParam [in]
-//	Type: WPARAM
-//		The identifier of the keyboard message. This parameter can be one of the 
-//		following messages: WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN or WM_SYSKEYUP.
-//lParam [in]
-//	Type: LPARAM
-//		A pointer to a KBDLLHOOKSTRUCT structure.
-LRESULT CALLBACK KeyboardProc(int code, WPARAM wParam, LPARAM lParam)
-{
-	tflag = true;
-
-	//printf("msg: %lu, code: %ld\n", code, wParam);
-
-	return CallNextHookEx(g_hMouse, code, wParam, lParam);
-}
-
-//http://msdn.microsoft.com/en-us/library/windows/desktop/ms644907(v=vs.85).aspx
-//hwnd [in]
-//	Type: HWND
-//		A handle to the window associated with the timer.
-//uMsg [in]
-//	Type: UINT
-//		The WM_TIMER message.
-//idEvent [in]
-//	Type: UINT_PTR
-//		The timer's identifier.
-//dwTime [in]
-//	Type: DWORD
-//		The number of milliseconds that have elapsed since the system was started. 
-VOID CALLBACK MyTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
-{
-	if(tflag) {
-		//printf("MyTimerProc %d %d %d\n", uMsg, idEvent, dwTime);
-		printf(".");
-	}
-	else {//no one moves the mouse or type any keys
-		//http://msdn.microsoft.com/en-us/library/windows/desktop/ms724950(v=vs.85).aspx
-		SYSTEMTIME /*st, */lt;
-
-		//GetSystemTime(&st);
-		GetLocalTime(&lt);
-
-		printf("\nTimerProc: send fake move to system %d %d (%02d:%02d)\n", 
-			mouseX, mouseY, lt.wHour, lt.wMinute);
-		//printf("MyTimerProc %d %d\n", uMsg, idEvent);
-		//SetCursorPos(mouseX+10, mouseY+10);
-		//mouse_event(MOUSEEVENTF_MOVE|MOUSEEVENTF_ABSOLUTE, mouseX+10, mouseY+10, 0, 0);
-		SetCursorPos(mouseX, mouseY);
-
-		//http://msdn.microsoft.com/en-us/library/windows/desktop/ms646260(v=vs.85).aspx
-		//mouse_event(MOUSEEVENTF_MOVE|MOUSEEVENTF_ABSOLUTE, mouseX, mouseY, NULL, NULL);
-		//http://edisonx.pixnet.net/blog/post/37622951-%5Bw%5D-mouse-and-keybd
-		mouse_event(MOUSEEVENTF_MOVE, 1, 1, NULL, NULL);//move is relative points
-		//mouse_event(MOUSEEVENTF_LEFTUP|MOUSEEVENTF_ABSOLUTE, mouseX, mouseY, NULL, NULL);
-
-		SetCursorPos(mouseX, mouseY);//set back to old position
-	}
-
-	tflag = false;//always set the flag false
+    KillTimer(NULL, timerId);
+    return 0;
 }
